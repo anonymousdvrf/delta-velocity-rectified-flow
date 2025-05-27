@@ -9,6 +9,7 @@ Official implementation of the paper **“Delta Velocity Rectified Flow for Text
 git clone https://github.com/anonymousdvrf/delta-velocity-rectified-flow.git
 cd delta-velocity-rectified-flow
 pip install torch diffusers transformers accelerate sentencepiece protobuf
+conda env create -f dvrf_environment.yml
 ```
 
 ## Usage

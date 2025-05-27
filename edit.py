@@ -8,7 +8,7 @@ import numpy as np
 import yaml
 import os
 import shutil
-from models.DVRF import DVRF_SD3_opt
+from models.DVRF import DVRF_SD3
 from pprint import pprint
 
 def concatenate_images(image1, image2):
@@ -121,7 +121,7 @@ if __name__ == "__main__":
 
                 if model_type == 'SD3':
                     print(src_prompt, tgt_prompt)
-                    x0_tgt, _, trajectories = DVRF_SD3_opt(pipe, scheduler, x0_src, src_prompt, tgt_prompt, "", T_steps, B, src_guidance_scale, tgt_guidance_scale, n_min, n_max, eta, scheduler_strategy, lr, optim)
+                    x0_tgt, _, trajectories = DVRF_SD3(pipe, scheduler, x0_src, src_prompt, tgt_prompt, "", T_steps, B, src_guidance_scale, tgt_guidance_scale, n_min, n_max, eta, scheduler_strategy, lr, optim)
 
                 else:
                     raise NotImplementedError(f"Sampler type {model_type} not implemented") 

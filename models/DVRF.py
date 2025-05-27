@@ -8,7 +8,6 @@ import numpy as np
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import retrieve_timesteps
 
 
-
 def lr_hump_beta(k: int, N: int, alpha_max: float,
                  a: float = 3.0, b: float = 6.0) -> float:
     if not (1 <= k <= N):
@@ -18,12 +17,28 @@ def lr_hump_beta(k: int, N: int, alpha_max: float,
     peak = ((a - 1) / (a + b - 2))**(a - 1) * ((b - 1)/(a + b - 2))**(b - 1)
     return alpha_max * pdf / peak
 
+
 def lr_hump_tail_beta(k: int, N: int, alpha_max: float, beta: float,
                       a: float = 3.0, b: float = 6.0) -> float:
+    """
+    Compute learning rate using beta distribution hump with linear tail.
+    
+    Args:
+        k: Current step (1-indexed)
+        N: Total number of steps
+        alpha_max: Maximum learning rate value
+        beta: Linear tail coefficient
+        a: Beta distribution shape parameter
+        b: Beta distribution shape parameter
+        
+    Returns:
+        Learning rate value for step k
+    """
     x = (k - 1) / (N - 1)
-    hump = lr_hump_beta(k, N, alpha_max - beta, a, b)      # same shape but reduced amplitude
+    hump = lr_hump_beta(k, N, alpha_max - beta, a, b)  # Same shape but reduced amplitude
     tail = beta * x
     return hump + tail
+
 
 def scale_noise(
     scheduler,
@@ -32,30 +47,48 @@ def scale_noise(
     noise: Optional[torch.FloatTensor] = None,
 ) -> torch.FloatTensor:
     """
-    Forward process in flow-matching
+    Forward process in flow-matching.
+    
+    Args:
+        scheduler: Diffusion scheduler
+        sample: Input sample tensor
+        timestep: Current timestep
+        noise: Optional noise tensor
+        
+    Returns:
+        Scaled sample tensor
     """
-    # if scheduler.step_index is None:
     scheduler._init_step_index(timestep)
-
     sigma = scheduler.sigmas[scheduler.step_index]
     sample = sigma * noise + (1.0 - sigma) * sample
-
     return sample
 
 
-def calc_v_sd3(pipe, src_tgt_latent_model_input, src_tgt_prompt_embeds, src_tgt_pooled_prompt_embeds, src_guidance_scale, tgt_guidance_scale, t):
-    # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
+def calc_v_sd3(pipe, src_tgt_latent_model_input: torch.Tensor, 
+               src_tgt_prompt_embeds: torch.Tensor, 
+               src_tgt_pooled_prompt_embeds: torch.Tensor, 
+               src_guidance_scale: float, tgt_guidance_scale: float, 
+               t: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Calculate velocity predictions for SD3 model.
+    
+    Args:
+        pipe: Diffusion pipeline
+        src_tgt_latent_model_input: Concatenated source and target latent inputs
+        src_tgt_prompt_embeds: Concatenated prompt embeddings
+        src_tgt_pooled_prompt_embeds: Concatenated pooled prompt embeddings
+        src_guidance_scale: Source guidance scale
+        tgt_guidance_scale: Target guidance scale
+        t: Timestep tensor
+        
+    Returns:
+        Tuple of (source_velocity, target_velocity)
+    """
+    # Broadcast to batch dimension in a way that's compatible with ONNX/Core ML
     timestep = t.expand(src_tgt_latent_model_input.shape[0])
-    # joint_attention_kwargs = {}
-    # # add timestep to joint_attention_kwargs
-    # joint_attention_kwargs["timestep"] = timestep[0]
-    # joint_attention_kwargs["timestep_idx"] = i
-
-
+    
     with torch.no_grad():
-        # ensure latent input dtype matches transformer parameters: ONLY WITH JACOBIAN
-        #src_tgt_latent_model_input = src_tgt_latent_model_input.to(next(pipe.transformer.parameters()).dtype)
-        # # predict the noise for the source prompt
+        # Predict the noise for the source and target prompts
         noise_pred_src_tgt = pipe.transformer(
             hidden_states=src_tgt_latent_model_input,
             timestep=timestep,
@@ -65,7 +98,7 @@ def calc_v_sd3(pipe, src_tgt_latent_model_input, src_tgt_prompt_embeds, src_tgt_
             return_dict=False,
         )[0]
 
-        # perform guidance source
+        # Perform guidance
         if pipe.do_classifier_free_guidance:
             src_noise_pred_uncond, src_noise_pred_text, tgt_noise_pred_uncond, tgt_noise_pred_text = noise_pred_src_tgt.chunk(4)
             noise_pred_src = src_noise_pred_uncond + src_guidance_scale * (src_noise_pred_text - src_noise_pred_uncond)
@@ -74,13 +107,13 @@ def calc_v_sd3(pipe, src_tgt_latent_model_input, src_tgt_prompt_embeds, src_tgt_
     return noise_pred_src, noise_pred_tgt
 
 
-def DVRF_SD3_opt(
+def DVRF_SD3(
     pipe,
     scheduler,
-    x_src,
-    src_prompt,
-    tgt_prompt,
-    negative_prompt,
+    x_src: torch.Tensor,
+    src_prompt: str,
+    tgt_prompt: str,
+    negative_prompt: str,
     T_steps: int = 50,
     B: int = 1,
     src_guidance_scale: float = 6,
@@ -88,20 +121,41 @@ def DVRF_SD3_opt(
     num_steps: int = 50,
     eta: float = 0,
     scheduler_strategy: str = "descending",
-    lr: float = 0.02,
-    optim: str='SGD',
-):
-    '''
-    DVRF text-to-image optimization for SD3 models
-    '''
-    zt_edit = x_src.float().clone().requires_grad_(True)  # CHANGE: use FP32 with grad enabled
+    lr: Union[float, str] = 0.02,
+    optim: str = 'SGD',
+) -> Tuple[torch.Tensor, list, list]:
+    """
+    DVRF text-to-image optimization for SD3 models.
+    
+    Args:
+        pipe: Diffusion pipeline
+        scheduler: Diffusion scheduler
+        x_src: Source latent tensor
+        src_prompt: Source text prompt
+        tgt_prompt: Target text prompt
+        negative_prompt: Negative text prompt
+        T_steps: Number of diffusion timesteps
+        B: Batch size for averaging
+        src_guidance_scale: Source guidance scale
+        tgt_guidance_scale: Target guidance scale
+        num_steps: Number of optimization steps
+        eta: Eta parameter for trajectory modification
+        scheduler_strategy: Strategy for timestep scheduling ("random" or "descending")
+        lr: Learning rate (float or string for adaptive)
+        optim: Optimizer type
+        
+    Returns:
+        Tuple of (optimized_latent, velocities, trajectories)
+    """
+    zt_edit = x_src.float().clone().requires_grad_(True)
+    
+    # Initialize optimizer
     if optim == 'SGD':
-        if type(lr)==float:
+        if type(lr) == float:
             optimizer = torch.optim.SGD([zt_edit], lr=lr)
         else:
             optimizer = torch.optim.SGD([zt_edit], lr=0.02)
-
-    elif optim == 'SGD_Nesterov':  # SGD with Nesterov momentum
+    elif optim == 'SGD_Nesterov':
         optimizer = torch.optim.SGD([zt_edit], lr=lr, momentum=0.9, nesterov=True)
     elif optim == 'RMSprop':
         optimizer = torch.optim.RMSprop([zt_edit], lr=lr, alpha=0.9)
@@ -116,7 +170,7 @@ def DVRF_SD3_opt(
     timesteps, T_steps = retrieve_timesteps(scheduler, T_steps, device, timesteps=None)
     pipe._num_timesteps = len(timesteps)
     
-    # --- prompt encoding --------------------------------------------------
+    # Prompt encoding
     pipe._guidance_scale = src_guidance_scale
     (
         src_prompt_embeds,
@@ -159,36 +213,41 @@ def DVRF_SD3_opt(
         ],
         dim=0,
     )
-    # ----------------------------------------------------------------------
-    velocities=[]
-    trajectories=[zt_edit.detach().clone()]
-    alpha_T_steps=(timesteps[T_steps-2]/1000 - timesteps[T_steps-1] / 1000)/1.6
-    alpha_max, beta=alpha_T_steps/1.6, alpha_T_steps/4
-    print("alpha_T_steps" , 1.6*alpha_T_steps, )
+    
+    # Initialize tracking variables
+    velocities = []
+    trajectories = [zt_edit.detach().clone()]
+    alpha_T_steps = (timesteps[T_steps-2]/1000 - timesteps[T_steps-1] / 1000) / 1.6
+    alpha_max, beta = alpha_T_steps / 1.6, alpha_T_steps / 4
+    print("alpha_T_steps", 1.6 * alpha_T_steps)
+    
+    # Optimization loop
     if scheduler_strategy == "random":
-        for i in range(num_steps):     
+        for i in range(num_steps):
             V_delta_avg = torch.zeros_like(x_src)
             for k in range(B):
                 ind = torch.randint(2, T_steps - 1, (1,)).item()
                 t = timesteps[ind]
                 t_i = t / 1000
                 print(T_steps)
-                alpha_i=2.2*lr_hump_tail_beta(i+1, T_steps+28, alpha_max, beta, a=10, b=8)
-                eta_i=eta*i/T_steps
+                alpha_i = 2.2 * lr_hump_tail_beta(i+1, T_steps+28, alpha_max, beta, a=10, b=8)
+                eta_i = eta * i / T_steps
                 t_i_FE = timesteps[i] / 1000
                 if i + 1 < len(timesteps):
                     t_im1_FE = timesteps[i + 1] / 1000
                 else:
                     t_im1_FE = torch.zeros_like(t_i_FE)
+                
                 fwd_noise = torch.randn_like(x_src, device=device)
                 zt_src = (1 - t_i) * x_src + t_i * fwd_noise
-                zt_tgt = (1 - t_i) * zt_edit + t_i * fwd_noise + eta_i * t_i * (zt_edit - x_src)
+                zt_tgt = (1 - t_i) * zt_edit + t_i * fwd_noise + eta_i * t_i * (zt_edit - x_src)  # Eq. 8
                 src_tgt_latent_model_input = (
                     torch.cat([zt_src, zt_src, zt_tgt, zt_tgt])
                     if pipe.do_classifier_free_guidance
                     else (zt_src, zt_tgt)
                 )
-                # CHANGE: use inference mode and cast latent input to half precision
+                
+                # Use inference mode and cast latent input to half precision
                 with torch.inference_mode():
                     src_tgt_latent_model_input_fp16 = src_tgt_latent_model_input.half()
                     Vt_src, Vt_tgt = calc_v_sd3(
@@ -201,27 +260,28 @@ def DVRF_SD3_opt(
                         t,
                     )
                 V_delta_avg += (Vt_tgt - Vt_src) / B
+            
             current_lr_FE = t_i_FE - t_im1_FE
-            current_lr=alpha_i
-            if lr=="FE":
+            current_lr = alpha_i
+            if lr == "FE":
                 optimizer.param_groups[0]['lr'] = current_lr_FE
                 print("FE lr:", current_lr_FE)
-            elif type(lr)== str:
+            elif type(lr) == str:
                 optimizer.param_groups[0]['lr'] = current_lr
                 print("FE lr:", current_lr_FE)
                 print(lr, alpha_i)
+            
             velocities.append(V_delta_avg)
-            grad=V_delta_avg+(1-eta_i)*(zt_edit-x_src) # test: progressive growing eta
+            grad = V_delta_avg + (1 - eta_i) * (zt_edit - x_src)  # Eq. 10
             loss = (zt_edit * grad.detach()).sum()
             velocities.append(V_delta_avg)
-            #loss = (zt_edit * V_delta_avg.detach()).sum() 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             trajectories.append(zt_edit.detach().clone())
     else:  # descending
-        for i, t in enumerate(timesteps): # from 0 to T_steps-1, value will go from 1 to 0
-            if T_steps - i > num_steps: #i<T_steps-num_steps
+        for i, t in enumerate(timesteps):  # From 0 to T_steps-1, value will go from 1 to 0
+            if T_steps - i > num_steps:  # i < T_steps - num_steps
                 continue
             
             t_i = t / 1000
@@ -229,19 +289,22 @@ def DVRF_SD3_opt(
                 t_im1 = timesteps[i + 1] / 1000
             else:
                 t_im1 = torch.zeros_like(t_i)
+            
             print("i, T_steps", i, T_steps)
-            alpha_i=2.2*lr_hump_tail_beta(i+1, T_steps+28, alpha_max, beta, a=10, b=8)
-            eta_i=eta*i/T_steps
+            alpha_i = 2.2 * lr_hump_tail_beta(i+1, T_steps+28, alpha_max, beta, a=10, b=8)
+            eta_i = eta * i / T_steps
             V_delta_avg = torch.zeros_like(x_src)
+            
             for k in range(B):
                 fwd_noise = torch.randn_like(x_src, device=device)
                 zt_src = (1 - t_i) * x_src + t_i * fwd_noise
-                zt_tgt = (1 - t_i) * zt_edit + t_i * fwd_noise + eta_i * t_i * (zt_edit - x_src)
+                zt_tgt = (1 - t_i) * zt_edit + t_i * fwd_noise + eta_i * t_i * (zt_edit - x_src)  # Eq. 8
                 src_tgt_latent_model_input = (
                     torch.cat([zt_src, zt_src, zt_tgt, zt_tgt])
                     if pipe.do_classifier_free_guidance
                     else (zt_src, zt_tgt)
                 )
+                
                 with torch.inference_mode():
                     src_tgt_latent_model_input_fp16 = src_tgt_latent_model_input.half()
                     Vt_src, Vt_tgt = calc_v_sd3(
@@ -254,15 +317,17 @@ def DVRF_SD3_opt(
                         t,
                     )
                 V_delta_avg += (Vt_tgt - Vt_src) / B
+            
             current_lr_FE = t_i - t_im1
-            current_lr=alpha_i
-            if type(lr)== str:
+            current_lr = alpha_i
+            if type(lr) == str:
                 optimizer.param_groups[0]['lr'] = current_lr
                 print("FE lr:", current_lr_FE)
                 print(lr, alpha_i)
+            
             velocities.append(V_delta_avg)
-            grad=V_delta_avg+(1-eta_i)*(zt_edit-x_src)
-            #loss = 0.5 * grad.pow(2).sum() #equivalent
+            grad = V_delta_avg + (1 - eta_i) * (zt_edit - x_src)  # Eq. 10
+            # loss = 0.5 * grad.pow(2).sum()  # Equivalent loss
             loss = (zt_edit * grad.detach()).sum()
             optimizer.zero_grad()
             loss.backward()
