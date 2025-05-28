@@ -1,4 +1,3 @@
-#CUDA_VISIBLE_DEVICES=7 python run_script.py --exp_yaml exp.yaml
 import torch
 from diffusers import StableDiffusion3Pipeline, FluxPipeline
 from PIL import Image
@@ -34,7 +33,7 @@ if __name__ == "__main__":
     parser.add_argument("--exp_yaml", type=str, default="exp.yaml", help="experiment yaml file")
     parser.add_argument("--exp_name", type=str, help="override exp_name")
     parser.add_argument("--eta", type=float, help="override eta")
-    parser.add_argument("--n_max", type=int, help="override n_max")
+    parser.add_argument("--num_steps", type=int, help="override num_steps")
     parser.add_argument("--src_guidance_scale", type=float, help="override src_guidance_scale")
     parser.add_argument("--tgt_guidance_scale", type=float, help="override tgt_guidance_scale")
 
@@ -53,7 +52,7 @@ if __name__ == "__main__":
     overrides = {
         "exp_name": args.exp_name,
         "eta": args.eta,
-        "n_max": args.n_max,
+        "num_steps": args.num_steps,
         "src_guidance_scale": args.src_guidance_scale,
         "tgt_guidance_scale": args.tgt_guidance_scale,
     }
@@ -81,14 +80,12 @@ if __name__ == "__main__":
         B = exp_dict["B"]
         src_guidance_scale = exp_dict["src_guidance_scale"]
         tgt_guidance_scale = exp_dict["tgt_guidance_scale"]
-        n_min = exp_dict["n_min"]
-        n_max = exp_dict["n_max"]
+        num_steps = exp_dict["num_steps"]
         seed = exp_dict["seed"]
         eta=exp_dict["eta"]
         scheduler_strategy=exp_dict["scheduler_strategy"]
         lr=exp_dict["lr"]
         optim=exp_dict["optimizer"]
-        info=exp_dict["info"]
 
         # Set seed for reproducibility
         random.seed(seed)
@@ -101,7 +98,6 @@ if __name__ == "__main__":
             dataset_configs = yaml.load(file, Loader=yaml.FullLoader)
         for data_dict in dataset_configs:
             src_prompt = data_dict["source_prompt"]
-            print(src_prompt)
             tgt_prompts = data_dict["target_prompts"]
             image_src_path = data_dict["input_img"]
 
@@ -121,7 +117,7 @@ if __name__ == "__main__":
 
                 if model_type == 'SD3':
                     print(src_prompt, tgt_prompt)
-                    x0_tgt, _, trajectories = DVRF_SD3(pipe, scheduler, x0_src, src_prompt, tgt_prompt, "", T_steps, B, src_guidance_scale, tgt_guidance_scale, n_min, n_max, eta, scheduler_strategy, lr, optim)
+                    x0_tgt, _, trajectories = DVRF_SD3(pipe, scheduler, x0_src, src_prompt, tgt_prompt, "", T_steps, B, src_guidance_scale, tgt_guidance_scale, num_steps, eta, scheduler_strategy, lr, optim)
 
                 else:
                     raise NotImplementedError(f"Sampler type {model_type} not implemented") 
@@ -144,7 +140,7 @@ if __name__ == "__main__":
                 os.makedirs(save_dir, exist_ok=True)
 
                 # Save concatenated image
-                output_filename = f"{save_dir}/{lr}_eta_{eta}_{info}_{scheduler_strategy}{optim}T_steps_{T_steps}_n_max_{n_max}_n_min_{n_min}_n_avg_{n_avg}_cfg_enc_{src_guidance_scale}_cfg_dec{tgt_guidance_scale}_seed{seed}.png"
+                output_filename = f"{save_dir}/{lr}_eta_{eta}_{scheduler_strategy}{optim}T_steps_{T_steps}_num_steps_{num_steps}_cfg_enc_{src_guidance_scale}_cfg_dec{tgt_guidance_scale}_seed{seed}.png"
                 concatenated_image.save(output_filename)
 
                 # Save intermediate trajectory images every 5 steps

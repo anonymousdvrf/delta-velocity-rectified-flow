@@ -10,6 +10,19 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import retri
 
 def lr_hump_beta(k: int, N: int, alpha_max: float,
                  a: float = 3.0, b: float = 6.0) -> float:
+    """
+    Compute learning rate using beta distribution hump shape.
+    
+    Args:
+        k: Current step (1-indexed)
+        N: Total number of steps
+        alpha_max: Maximum learning rate value
+        a: Beta distribution shape parameter
+        b: Beta distribution shape parameter
+        
+    Returns:
+        Learning rate value for step k
+    """
     if not (1 <= k <= N):
         raise ValueError("k must be in [1, N]")
     x = (k - 1) / (N - 1)
@@ -219,17 +232,18 @@ def DVRF_SD3(
     trajectories = [zt_edit.detach().clone()]
     alpha_T_steps = (timesteps[T_steps-2]/1000 - timesteps[T_steps-1] / 1000) / 1.6
     alpha_max, beta = alpha_T_steps / 1.6, alpha_T_steps / 4
-    print("alpha_T_steps", 1.6 * alpha_T_steps)
     
     # Optimization loop
     if scheduler_strategy == "random":
-        for i in range(num_steps):
+        pbar = tqdm(range(num_steps), desc="DVRF Optimization (Random)", 
+                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+        
+        for i in pbar:
             V_delta_avg = torch.zeros_like(x_src)
             for k in range(B):
                 ind = torch.randint(2, T_steps - 1, (1,)).item()
                 t = timesteps[ind]
                 t_i = t / 1000
-                print(T_steps)
                 alpha_i = 2.2 * lr_hump_tail_beta(i+1, T_steps+28, alpha_max, beta, a=10, b=8)
                 eta_i = eta * i / T_steps
                 t_i_FE = timesteps[i] / 1000
@@ -261,15 +275,12 @@ def DVRF_SD3(
                     )
                 V_delta_avg += (Vt_tgt - Vt_src) / B
             
-            current_lr_FE = t_i_FE - t_im1_FE
             current_lr = alpha_i
-            if lr == "FE":
-                optimizer.param_groups[0]['lr'] = current_lr_FE
-                print("FE lr:", current_lr_FE)
-            elif type(lr) == str:
+            if type(lr) == str:
                 optimizer.param_groups[0]['lr'] = current_lr
-                print("FE lr:", current_lr_FE)
-                print(lr, alpha_i)
+            
+            # Update progress bar with current learning rate
+            pbar.set_postfix({'lr': f'{current_lr:.6f}', 'eta': f'{eta_i:.3f}'})
             
             velocities.append(V_delta_avg)
             grad = V_delta_avg + (1 - eta_i) * (zt_edit - x_src)  # Eq. 10
@@ -280,17 +291,19 @@ def DVRF_SD3(
             optimizer.step()
             trajectories.append(zt_edit.detach().clone())
     else:  # descending
-        for i, t in enumerate(timesteps):  # From 0 to T_steps-1, value will go from 1 to 0
-            if T_steps - i > num_steps:  # i < T_steps - num_steps
-                continue
-            
+        # Filter timesteps for descending strategy
+        active_timesteps = [(i, t) for i, t in enumerate(timesteps) if T_steps - i <= num_steps]
+        
+        pbar = tqdm(active_timesteps, desc="DVRF Optimization (Descending)", 
+                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+        
+        for i, t in pbar:
             t_i = t / 1000
             if i + 1 < len(timesteps):
                 t_im1 = timesteps[i + 1] / 1000
             else:
                 t_im1 = torch.zeros_like(t_i)
             
-            print("i, T_steps", i, T_steps)
             alpha_i = 2.2 * lr_hump_tail_beta(i+1, T_steps+28, alpha_max, beta, a=10, b=8)
             eta_i = eta * i / T_steps
             V_delta_avg = torch.zeros_like(x_src)
@@ -318,12 +331,12 @@ def DVRF_SD3(
                     )
                 V_delta_avg += (Vt_tgt - Vt_src) / B
             
-            current_lr_FE = t_i - t_im1
             current_lr = alpha_i
             if type(lr) == str:
                 optimizer.param_groups[0]['lr'] = current_lr
-                print("FE lr:", current_lr_FE)
-                print(lr, alpha_i)
+            
+            # Update progress bar with current timestep and learning rate
+            pbar.set_postfix({'step': i, 't': f'{t_i:.3f}', 'lr': f'{current_lr:.6f}', 'eta': f'{eta_i:.3f}'})
             
             velocities.append(V_delta_avg)
             grad = V_delta_avg + (1 - eta_i) * (zt_edit - x_src)  # Eq. 10
