@@ -254,7 +254,7 @@ def DVRF_SD3(
                 
                 fwd_noise = torch.randn_like(x_src, device=device)
                 zt_src = (1 - t_i) * x_src + t_i * fwd_noise
-                zt_tgt = (1 - t_i) * zt_edit + t_i * fwd_noise + eta_i * t_i * (zt_edit - x_src)  # Eq. 8
+                zt_tgt = (1 - t_i) * zt_edit + t_i * fwd_noise + eta_i * t_i * (zt_edit - x_src)  # Eq. 6
                 src_tgt_latent_model_input = (
                     torch.cat([zt_src, zt_src, zt_tgt, zt_tgt])
                     if pipe.do_classifier_free_guidance
@@ -283,7 +283,7 @@ def DVRF_SD3(
             pbar.set_postfix({'lr': f'{current_lr:.6f}', 'eta': f'{eta_i:.3f}'})
             
             velocities.append(V_delta_avg)
-            grad = V_delta_avg + (1 - eta_i) * (zt_edit - x_src)  # Eq. 10
+            grad = V_delta_avg + (1 - eta_i) * (zt_edit - x_src)  # Eq. 8
             loss = (zt_edit * grad.detach()).sum()
             velocities.append(V_delta_avg)
             optimizer.zero_grad()
@@ -311,7 +311,7 @@ def DVRF_SD3(
             for k in range(B):
                 fwd_noise = torch.randn_like(x_src, device=device)
                 zt_src = (1 - t_i) * x_src + t_i * fwd_noise
-                zt_tgt = (1 - t_i) * zt_edit + t_i * fwd_noise + eta_i * t_i * (zt_edit - x_src)  # Eq. 8
+                zt_tgt = (1 - t_i) * zt_edit + t_i * fwd_noise + eta_i * t_i * (zt_edit - x_src)  # Eq. 6
                 src_tgt_latent_model_input = (
                     torch.cat([zt_src, zt_src, zt_tgt, zt_tgt])
                     if pipe.do_classifier_free_guidance
@@ -339,7 +339,7 @@ def DVRF_SD3(
             pbar.set_postfix({'step': i, 't': f'{t_i:.3f}', 'lr': f'{current_lr:.6f}', 'eta': f'{eta_i:.3f}'})
             
             velocities.append(V_delta_avg)
-            grad = V_delta_avg + (1 - eta_i) * (zt_edit - x_src)  # Eq. 10
+            grad = V_delta_avg + (1 - eta_i) * (zt_edit - x_src)  # Eq. 8
             # loss = 0.5 * grad.pow(2).sum()  # Equivalent loss
             loss = (zt_edit * grad.detach()).sum()
             optimizer.zero_grad()
