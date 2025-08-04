@@ -68,9 +68,27 @@ if __name__ == "__main__":
         pipe = FluxPipeline.from_pretrained("black-forest-labs/FLUX.1-dev", torch_dtype=torch.float16)
     elif model_type == 'SD3':
         pipe = StableDiffusion3Pipeline.from_pretrained("stabilityai/stable-diffusion-3-medium-diffusers", torch_dtype=torch.float16)
-    else:
-        raise NotImplementedError(f"Model type {model_type} not implemented")
+    elif model_type.startswith('SD3.5'):
+        SD35_MODELS = {
+    'large': 'stabilityai/stable-diffusion-3.5-large',
+    'large-turbo': 'stabilityai/stable-diffusion-3.5-large-turbo',
+    'medium': 'stabilityai/stable-diffusion-3.5-medium'
+    }
+        # Handle SD 3.5 variants
+        if model_type == 'SD3.5':
+            # Default to medium if no specific variant is specified
+            model_variant = 'medium'
+        else:
+            # Extract variant from model_type (e.g., 'SD3.5-large', 'SD3.5-large-turbo')
+            model_variant = model_type.split('-', 1)[1] if '-' in model_type else 'medium'
 
+        if model_variant not in SD35_MODELS:
+            raise ValueError(f"Unknown SD 3.5 variant: {model_variant}. Available variants: {list(SD35_MODELS.keys())}")
+        else:
+            raise NotImplementedError(f"Model type {model_type} not implemented")
+        model_id = SD35_MODELS[model_variant]
+        print(f"Loading SD 3.5 model: {model_id}")
+        pipe = StableDiffusion3Pipeline.from_pretrained(model_id, torch_dtype=torch.float16)
     scheduler = pipe.scheduler
     pipe = pipe.to(device)
 
@@ -115,7 +133,7 @@ if __name__ == "__main__":
             x0_src = x0_src.to(device)
             for tgt_num, tgt_prompt in enumerate(tgt_prompts):
 
-                if model_type == 'SD3':
+                if model_type == 'SD3' or model_type.startswith('SD3.5'):
                     print(src_prompt, tgt_prompt)
                     x0_tgt, _, trajectories = DVRF_SD3(pipe, scheduler, x0_src, src_prompt, tgt_prompt, "", T_steps, B, src_guidance_scale, tgt_guidance_scale, num_steps, eta, scheduler_strategy, lr, optim)
 
